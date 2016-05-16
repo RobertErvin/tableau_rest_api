@@ -83,7 +83,7 @@ default.signin()
 site_content_urls = default.query_all_site_content_urls()
 
 for site_content_url in site_content_urls:
-    t = TableauRestApi(u"http://127.0.0.1", u"admin", u"adminsp@ssw0rd". site_content_url=site_content_url)
+    t = TableauRestApi(u"http://127.0.0.1", u"admin", u"adminsp@ssw0rd", site_content_url=site_content_url)
     t.signin()
     ...
     
@@ -268,13 +268,13 @@ tableau_rest_api handles this through two concepts -- the GranteeCapabilities ob
 4.1 GranteeCapabilities class
 Any time you want to set or change permissions, you should instantiate a GranteeCapabilities object to represent that set of permissions/capabilities. 
 
-The "obj_type" argument takes either u"group" or u"user". It is highly recommended that you set your permissions using groups rather than users, and tableau_rest_api often defaults to group where possible on this recommendation. content_type is one of: u"project", u"workbook", or u"datasource". Giving the content_type allows for setting only applicable capabilities for the given object. 
+The "obj_type" argument takes either u"group" or u"user". It is highly recommended that you set your permissions using groups rather than users, and tableau_rest_api often defaults to group where possible on this recommendation. content_type is one of: u"project", u"workbook", or u"datasource". Giving the content_type allows for setting only applicable capabilities for the given object. The TableauRestApi object has a method for generating a GranteeCapabilities object with the correct settings, and is preferable to initializing the object directly:
 
 TableauRestApi.get_grantee_capabilities_object(obj_type, luid, content_type=None)
 
 Ex. 
 team_group_luid = t.query_group_luid_by_name(u"Team Member")
-team_gcap_obj = get_grantee_capabilities_object(u"group", team_group_luid, content_type=u"project")
+team_gcap_obj = t.get_grantee_capabilities_object(u"group", team_group_luid, content_type=u"project")
 
 Internally, tableau_rest_api represents the full set of granteeCapabilities on a content object as a Python list of GranteeCapabilities objects. You will see this in some of the code as "gcap_obj_list". If you want to pass a single object to a method that takes a list, simply do the [gcap_obj, ] Python syntax.
 
@@ -297,23 +297,23 @@ There are two quick methods for all to allow or all to deny:
 GranteeCapabilities.set_all_to_deny()
 GranteeCapabilities.set_all_to_allow()
 
-There is also a method to match the roles from the Tableau Server UI. It is aware of both the api version and the content_type, and will give you an error if you choose a role that is not available for that content type ("Project Leader" on a Workook, for example)
+There is also a method to match the roles from the Tableau Server UI. It is aware of both the api version and the content_type, and will give you an error if you choose a role that is not available for that content type ("Project Leader" on a Workbook, for example)
 
 GranteeCapabilities.set_capabilities_to_match_role(role)
 
 Ex. 
 team_group_luid = t.query_group_luid_by_name(u"Team Member")
-team_p_gcap_obj = GranteeCapabilities(u"group", team_group_luid, content_type=u"project")
+team_p_gcap_obj = t.get_grantee_capabilities_object(u"group", team_group_luid, content_type=u"project")
 team_p_gcap_obj.set_capabilities_to_match_role(u"Publisher")
 
-team_wb_gcap_obj = GranteeCapabilities(u"group", team_group_luid, content_type=u"workbook")
+team_wb_gcap_obj = t.get_grantee_capabilities_object(u"group", team_group_luid, content_type=u"workbook")
 team_wb_gcap_obj.set_capabilities_to_match_role(u"Interactor")
 
 
 4.3 PublishedContent classes (Project, Workbook, Datasource)
 There are three classes that represent the state of published content to a server; they all descend from the PublishedContent class, but there is no reason to ever access PublishedContent directly. Each of these require passing in an active and signed-in TableauRestApi object so that they can perform actions against the Tableau Server.
 
-Project obviously represents a project. In API Verison 2.1, a Project also contains a child Workbook and Datasource object that represent the Default Permissions that can be set for that project. IN API Version 2.0, the Project simply has a full set of capabilities that include those that apply to a workbook or a datasource. This reflects the difference in Tableau Server itself. If you are still on 9.1 or before, make sure to set your tableau_server_version argument so that the Project class behaves correctly.
+Project obviously represents a project. In API Verison 2.1, a Project also contains a child Workbook and Datasource object that represent the Default Permissions that can be set for that project. In API Version 2.0, the Project simply has a full set of capabilities that include those that apply to a workbook or a datasource. This reflects the difference in Tableau Server itself. If you are still on 9.1 or before, make sure to set your tableau_server_version argument so that the Project class behaves correctly.
 
 TableauRestApi.get_project_object_by_luid(luid)
 TableauRestApi.get_datasource_object_by_luid(luid)
@@ -369,12 +369,21 @@ If a workbook references a published data source, that data source must be publi
 5.1 Publishing a Workbook or Datasource
 The publish methods were orginally designed to upload directly from disk, and if you specify a text string for the filename argument, tableau_rest_api will attempt to open those files and then upload them. 
 
-TableauRestApi.publish_workbook(workbook_filename, workbook_name, project_luid, overwrite=False, connection_username=None, connection_password=None, save_credentials=True, show_tabs=True)
+TableauRestApi.publish_workbook(workbook_filename, workbook_name, project_luid, overwrite=False, connection_username=None, connection_password=None, save_credentials=True, show_tabs=True, check_published_ds=False)
 
 TableauRestApi.publish_datasource(ds_filename, ds_name, project_luid, overwrite=False, connection_username=None, connection_password=None, save_credentials=True)
 
 You can also pass in a TableauWorkbook object into publish_workbook, or a TableauDatasource object into publish_datasource. Information about these class types is further in this document. Simply put, they allow you to make certain changes to the workbook or datasource XML programmatically in-memory, without having to write to disk each time.
 
+5.2 Publishing a Workbook Connected to a Published Datasource
+Starting in Tableau Server 9.2, a slight modification must be made to a workbook that connects to a Published Datasource on a different site than the workbook was originally created on. The correct order for this type of publishing is:
+
+1) Publish the Data Source to the Site, with the same name that was used on the first site that the workbook connected to. (So, if the workbook connected to "Data Source 1" on "Test Site", you need to publish the same data source (even if you've modified the connection information) to "Customer Site 1" with the name "Data Source 1".
+2) Publish the workbook with the check_published_ds=True flag on, like so:
+
+TableauRestApi.publish_workbook(workbook_filename, workbook_name, project_luid, overwrite=True, check_published_ds=True)
+
+check_published_ds is False by default because performing the check every time does add some time to the publishing process, particularly on very large workbooks. However, it must be turned to True if you are publishing a workbook that connects to a Published Data Source. (Implemented in library version 2.1.3 and beyond)
 
 6. Advanced Features for Publishing from Templates
 tableau_rest_api implements some features that go beyond the Tableau REST API, but are extremely useful when dealing with a large number of workbooks or datasources, particularly for tenented Sites. These methods actually allow unsupported changes to the Tableau workbook or datasource XML. If something breaks with them, blame the author of the library and not Tableau Support, who won't help you with them.
@@ -427,6 +436,53 @@ You can get the type and then the object, and that lets you manipulate the under
 TableauPackagedFile.get_type()
 TableauPackagedFile.get_tableau_object()
 TableauPackagedFile.save_new_packaged_file(new_filename_no_extension)
+
+6.3 Translating Columns
+TableauDatasource.translate_columns(key_value_dict) will do a find/replace on the caption attribute of the column tags in the XML.
+
+When you save the datasource (or workbook), the changed captions will be written into the new XML.
+
+translate_columns actually calls translate_captions in the TableauColumns object, which follows the following rules for a match:
+
+    If no caption is set, look for a dict key that matches the name attribute, and if it matches, create a caption attribute and give it the value from the dict
+    If a caption is already set, look for a matching dict key for the existing caption.
+        If matching caption exists, replace with the new value
+        If matching caption does not exist, look for a matching name attribute, then replace the caption if one is found
+
+This is why the best method is to set your tokens in Tableau Desktop, so that you know exactly the captions you want to match to.
+
+Here is some example code in action (in an ideal world, you would pull your translations from a table and create the dicts programmatically):
+
+logger = Logger('translate.log')
+# Translation dictionaries (build automatically from a table)
+translations = { 'en': {
+                       '{Order Date}': 'Order Date',
+                       '{Sales}': 'Sales'
+                       },
+                 'de': {
+                        '{Order Date}': 'Auftragsdatum',
+                        '{Sales}': 'Bestellungen'
+                       },
+                 'ru': {
+                        '{Order Date}': u'Дата заказа',
+                        '{Sales}': u'заказы'
+                       },
+                'th': {
+                        '{Order Date}': u'วันสั่ง',
+                        '{Sales}': u'คำสั่งซื้อ'
+                      }
+              }
+
+
+for lang in translations:
+    wb_obj = TableauWorkbook(wb_filename, logger_obj=logger)
+    
+    for ds in wb_obj.datasources.values():
+        # Input the dict with translations
+        ds.translate_columns(translations[lang])
+
+    # Save to a new workbook with the correct language code appended
+    wb_obj.save_workbook_xml('workbook_{}.twb'.format(lang))
 
 
 7. Notes on the code

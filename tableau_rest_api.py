@@ -697,7 +697,7 @@ class TableauRestApi(TableauBase):
         self.start_log_block()
         url = self.build_api_url(u"auth/signout", login=True)
         self.log(u'Logging out via: {}'.format(url.encode('utf-8')))
-        api = RestXmlRequest(url, False, self.logger, ns_map_url=self.ns_map['t'])
+        api = RestXmlRequest(url, self.__token, self.logger, ns_map_url=self.ns_map['t'])
         api.set_http_verb('post')
         api.request_from_api()
         self.log(u'Signed out successfully')
@@ -2415,6 +2415,13 @@ class TableauRestApi(TableauBase):
 
     # Can take collection or string user_luid string
     def remove_users_from_group_by_luid(self, user_luid_s, group_luid):
+        """
+        :param user_luid_s:
+        :param group_luid:
+        :type user_luid_s: list[basestring] or basestring
+        :type group_luid: basestring
+        :return:
+        """
         self.start_log_block()
         user_luids = self.to_list(user_luid_s)
         for user_luid in user_luids:
@@ -2424,6 +2431,11 @@ class TableauRestApi(TableauBase):
 
     # Can take collection or single user_luid string
     def remove_users_from_site_by_luid(self, user_luid_s):
+        """
+        :param user_luid_s:
+        :type user_luid_s: list[basestring] or basestring
+        :return:
+        """
         self.start_log_block()
         user_luids = self.to_list(user_luid_s)
         for user_luid in user_luids:
@@ -2572,9 +2584,11 @@ class TableauRestApi(TableauBase):
     '''
 
     def publish_workbook(self, workbook_filename, workbook_name, project_luid, overwrite=False,
-                         connection_username=None, connection_password=None, save_credentials=True, show_tabs=True):
+                         connection_username=None, connection_password=None, save_credentials=True, show_tabs=True,
+                         check_published_ds=False):
         xml = self.publish_content(u'workbook', workbook_filename, workbook_name, project_luid, overwrite,
-                                   connection_username, connection_password, save_credentials, show_tabs=show_tabs)
+                                   connection_username, connection_password, save_credentials, show_tabs=show_tabs,
+                                   check_published_ds=check_published_ds)
         workbook = xml.xpath(u'//t:workbook', namespaces=self.ns_map)
         return workbook[0].get('id')
 
@@ -2675,20 +2689,20 @@ class TableauRestApi(TableauBase):
             content = content_file.read()
 
             # If twb, create a TableauWorkbook object and check for any published data sources
-            if file_extension == 'twb' and check_published_ds is True:
+            if file_extension == 'twb' and check_published_ds is True and self._site_content_url != 'default':
+                self.log("Making sure published datasource is in the right place")
                 if isinstance(content_filename, TableauWorkbook):
                     wb_obj = content_filename
                 else:
                     wb_obj = TableauWorkbook(content)
                 for ds in wb_obj.get_datasources().values():
-                    if ds.connection.is_published_datasource():
-                        pub_ds_name = ds.get_datasource_name()
-                        self.log(u"Workbook contains published data source named {}".format(pub_ds_name))
-                        try:
-                            self.query_datasource_by_name(pub_ds_name)
-                        except NoMatchFoundException as e:
-                            e_txt = u"Required published data source {} does not exist on this site".format(pub_ds_name)
-                            raise NoMatchFoundException(e_txt)
+                    # Set to the correct site
+                    if ds.is_published_ds():
+                        self.log("Published datasource found")
+                        self.log("Setting datasource to {}".format(self._site_content_url))
+                        ds.set_published_datasource_site(self._site_content_url)
+                content = StringIO(wb_obj.get_workbook_xml()).read()
+
             # Add to string as regular binary, no encoding
             publish_request += content
 
@@ -3454,6 +3468,7 @@ class TableauDatasource(TableauBase):
         self.connection = None
         self.columns_obj = None
         self.translate_flag = False
+        self.repository_location = None
 
         # Find connection line and build TableauConnection object
         start_flag = True
@@ -3476,6 +3491,13 @@ class TableauDatasource(TableauBase):
                     self.start_xml += line
                 elif start_flag is False:
                     self.end_xml += line
+            elif line.find('<repository-location ') != -1 and start_flag is True:
+                self.log(u'Creating a TableauRepositoryLocation object')
+                self.repository_location = TableauRepositoryLocation(line, self.logger)
+                self.log(u"This is the repository location line:")
+                self.log(line)
+                continue
+
             elif line.find('<connection ') != -1 and start_flag is True:
                 self.log(u'Creating a TableauConnection object')
                 self.connection = TableauConnection(line)
@@ -3524,6 +3546,8 @@ class TableauDatasource(TableauBase):
         self.start_log_block()
         xml = self.start_xml
         # Parameters datasource section does not have a connection tag
+        if self.repository_location is not None:
+            xml += self.repository_location.get_xml_string() + "\n"
         if self.connection is not None:
             xml += self.connection.get_xml_string()
         xml += self.middle_xml
@@ -3562,12 +3586,27 @@ class TableauDatasource(TableauBase):
         self.end_log_block()
         return xml
 
+    def is_published_ds(self):
+        if self.repository_location is not None:
+            return True
+        else:
+            return False
+
+    def set_published_datasource_site(self, new_site_content_url):
+        self.start_log_block()
+        self.repository_location.set_site(new_site_content_url)
+        self.end_log_block()
+
 
 class TableauWorkbook(TableauBase):
     def __init__(self, wb_string, logger_obj=None):
         self.logger = logger_obj
-        self.log(u'Initialzing a TableauWorkbook object')
+        self.log(u'Initializing a TableauWorkbook object')
         self.wb_string = wb_string
+        if self.wb_string.find('.twb') != -1:
+            self.log(u".twb found in wb_string, assuming it is actually a filename. Opening file")
+            fh = open(self.wb_string, 'rb')
+            self.wb_string = fh.read()
         self.wb = StringIO(self.wb_string)
         self.start_xml = ""
         self.end_xml = ""
@@ -3698,6 +3737,45 @@ class TableauConnection(TableauBase):
         self.xml_obj.attrib["sslmode"] = value
 
 
+# Represents the repository-location tag present in a published datasource in a workbook
+class TableauRepositoryLocation(TableauBase):
+    def __init__(self, tag_line, logger_obj=None):
+        self.logger = logger_obj
+        # Building from a <connection> tag
+        self.xml_obj = None
+        if tag_line.find(u"<repository-location ") != -1:
+            self.log(u'Looking at: {}'.format(tag_line))
+
+            utf8_parser = etree.XMLParser(encoding='utf-8')
+            xml = etree.parse(StringIO(tag_line), parser=utf8_parser)
+            self.xml_obj = xml.getroot()
+
+        else:
+            raise InvalidOptionException(u"Must create a TableauRepositoryLocation from a repository-location line")
+
+    def get_site(self):
+        return self.xml_obj.get("site")
+
+    def set_site(self, new_site_content_url):
+        self.start_log_block()
+        # If it was originally the default site, you need to add the site name in front
+        if self.xml_obj.get("site") is None:
+            self.xml_obj.attrib["path"] = '/t/{}'.format(new_site_content_url) + self.xml_obj.get("path")
+        # Replace the original site_content_url with the new one
+        elif self.xml_obj.get("site") is not None:
+            self.xml_obj.attrib["path"] = self.xml_obj.get("path").replace(self.xml_obj.get("site"), new_site_content_url)
+        self.xml_obj.attrib['site'] = new_site_content_url
+        self.end_log_block()
+
+    def get_xml_string(self):
+        self.start_log_block()
+        xml_with_ending_tag = etree.tostring(self.xml_obj)
+        self.log('XML from TableauRepositoryLocation')
+        self.log(xml_with_ending_tag)
+        self.end_log_block()
+        return xml_with_ending_tag
+
+
 class TableauColumns(TableauBase):
     def __init__(self, column_lines, logger_obj=None):
         self.logger = logger_obj
@@ -3720,7 +3798,7 @@ class TableauColumns(TableauBase):
 
     def translate_captions(self):
         self.start_log_block()
-        for column in self.get_columns_obj():
+        for column in self.columns_obj:
             if column.get('caption') is None:
                 trans = self.__find_translation(column.get('name'))
             else:
