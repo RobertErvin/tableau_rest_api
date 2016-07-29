@@ -1537,7 +1537,7 @@ class TableauRestApi(TableauBase):
         self.start_log_block()
         if self.api_version in [u"2.0", u"2.1"]:
             raise InvalidOptionException(u"query_schedules is only available in Tableau Server 9.3+")
-        schedules = self.query_resource(u"schedules")
+        schedules = self.query_resource(u"schedules", True)
         self.end_log_block()
         return schedules
 
